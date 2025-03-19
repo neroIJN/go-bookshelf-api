@@ -1,21 +1,11 @@
-FROM golang:1.19-alpine
+# Use Go base image
+FROM golang:1.20
 
 WORKDIR /app
-
-# Copy go.mod and go.sum
-COPY go.mod go.sum ./
-
-# Download dependencies
-RUN go mod download
-
-# Copy source code
 COPY . .
 
-# Build the application
-RUN go build -o main .
+RUN go mod tidy
+RUN go build -o book_api
 
-# Expose port
 EXPOSE 8080
-
-# Run the application
-CMD ["./main"]
+CMD ["./book_api"]

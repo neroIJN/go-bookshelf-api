@@ -10,11 +10,10 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/gorilla/mux"
 )
 
-// Book represents a book entity
 type Book struct {
 	BookID          string  `json:"bookId"`
 	AuthorID        string  `json:"authorId"`
@@ -29,268 +28,132 @@ type Book struct {
 	Quantity        int     `json:"quantity"`
 }
 
-// Global variables
 var books []Book
-var dataFile = "books.json"
-var mutex = &sync.RWMutex{}
+var fileName = "books.json"
 
-// Helper function to save books to file
-func saveBooks() error {
-	mutex.Lock()
-	defer mutex.Unlock()
-
-	data, err := json.MarshalIndent(books, "", "  ")
+func loadBooks() {
+	file, err := os.Open(fileName)
 	if err != nil {
-		return err
+		fmt.Println("No existing data found, starting fresh.")
+		return
 	}
+	defer file.Close()
 
-	return ioutil.WriteFile(dataFile, data, 0644)
+	data, err := ioutil.ReadAll(file)
+	if err == nil {
+		json.Unmarshal(data, &books)
+	}
 }
 
-// Helper function to load books from file
-func loadBooks() error {
-	if _, err := os.Stat(dataFile); os.IsNotExist(err) {
-		// If file doesn't exist, initialize with empty slice
-		books = []Book{}
-		return saveBooks()
-	}
-
-	data, err := ioutil.ReadFile(dataFile)
-	if err != nil {
-		return err
-	}
-
-	return json.Unmarshal(data, &books)
+func saveBooks() {
+	data, _ := json.MarshalIndent(books, "", "  ")
+	_ = ioutil.WriteFile(fileName, data, 0644)
 }
 
-// GET /books - Return all books
-func getBooks(w http.ResponseWriter, r *http.Request) {
-	mutex.RLock()
-	defer mutex.RUnlock()
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(books)
+// Get All Books
+func getBooks(c *gin.Context) {
+	c.JSON(http.StatusOK, books)
 }
 
-// POST /books - Create a new book
-func createBook(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	var book Book
-	err := json.NewDecoder(r.Body).Decode(&book)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
+// Create a Book
+func createBook(c *gin.Context) {
+	var newBook Book
+	if err := c.BindJSON(&newBook); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Generate a new UUID if not provided
-	if book.BookID == "" {
-		book.BookID = uuid.New().String()
-	}
-
-	mutex.Lock()
-	books = append(books, book)
-	mutex.Unlock()
-
-	err = saveBooks()
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to save book"})
-		return
-	}
-
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(book)
+	newBook.BookID = uuid.New().String()
+	books = append(books, newBook)
+	saveBooks()
+	c.JSON(http.StatusCreated, newBook)
 }
 
-// GET /books/{id} - Return a single book by ID
-func getBook(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	params := mux.Vars(r)
-	bookID := params["id"]
-
-	mutex.RLock()
-	defer mutex.RUnlock()
-
+// Get a Book by ID
+func getBookByID(c *gin.Context) {
+	id := c.Param("id")
 	for _, book := range books {
-		if book.BookID == bookID {
-			json.NewEncoder(w).Encode(book)
+		if book.BookID == id {
+			c.JSON(http.StatusOK, book)
 			return
 		}
 	}
-
-	w.WriteHeader(http.StatusNotFound)
-	json.NewEncoder(w).Encode(map[string]string{"error": "Book not found"})
+	c.JSON(http.StatusNotFound, gin.H{"message": "Book not found"})
 }
 
-// PUT /books/{id} - Update a single book by ID
-func updateBook(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	params := mux.Vars(r)
-	bookID := params["id"]
-
+// Update a Book
+func updateBook(c *gin.Context) {
+	id := c.Param("id")
 	var updatedBook Book
-	err := json.NewDecoder(r.Body).Decode(&updatedBook)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request body"})
+
+	if err := c.BindJSON(&updatedBook); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Ensure the book ID in the URL matches the book ID in the request body
-	if updatedBook.BookID != bookID && updatedBook.BookID != "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Book ID mismatch"})
-		return
-	}
-
-	updatedBook.BookID = bookID
-
-	mutex.Lock()
-	defer mutex.Unlock()
-
-	found := false
 	for i, book := range books {
-		if book.BookID == bookID {
+		if book.BookID == id {
+			updatedBook.BookID = id
 			books[i] = updatedBook
-			found = true
-			break
+			saveBooks()
+			c.JSON(http.StatusOK, updatedBook)
+			return
 		}
 	}
-
-	if !found {
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Book not found"})
-		return
-	}
-
-	err = saveBooks()
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to update book"})
-		return
-	}
-
-	json.NewEncoder(w).Encode(updatedBook)
+	c.JSON(http.StatusNotFound, gin.H{"message": "Book not found"})
 }
 
-// DELETE /books/{id} - Delete a single book by ID
-func deleteBook(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	params := mux.Vars(r)
-	bookID := params["id"]
-
-	mutex.Lock()
-	defer mutex.Unlock()
-
-	found := false
+// Delete a Book
+func deleteBook(c *gin.Context) {
+	id := c.Param("id")
 	for i, book := range books {
-		if book.BookID == bookID {
+		if book.BookID == id {
 			books = append(books[:i], books[i+1:]...)
-			found = true
-			break
+			saveBooks()
+			c.JSON(http.StatusOK, gin.H{"message": "Book deleted"})
+			return
 		}
 	}
-
-	if !found {
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Book not found"})
-		return
-	}
-
-	err := saveBooks()
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to delete book"})
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"message": "Book deleted successfully"})
+	c.JSON(http.StatusNotFound, gin.H{"message": "Book not found"})
 }
 
-// GET /books/search?q=<keyword> - Search books by keyword in title and description
-func searchBooks(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	query := strings.ToLower(r.URL.Query().Get("q"))
-	if query == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Search query is required"})
-		return
-	}
-
-	mutex.RLock()
-	booksCopy := make([]Book, len(books))
-	copy(booksCopy, books)
-	mutex.RUnlock()
-
-	// Split books into chunks for parallel processing
-	numWorkers := 4
-	chunkSize := (len(booksCopy) + numWorkers - 1) / numWorkers
-
-	// Channel to collect results
-	resultsChan := make(chan []Book, numWorkers)
-
+// Search Books
+func searchBooks(c *gin.Context) {
+	query := strings.ToLower(c.Query("q"))
+	var results []Book
 	var wg sync.WaitGroup
+	resultChannel := make(chan Book, len(books))
 
-	// Create worker goroutines
-	for i := 0; i < numWorkers; i++ {
+	for _, book := range books {
 		wg.Add(1)
-		go func(start, end int) {
+		go func(b Book) {
 			defer wg.Done()
-
-			var results []Book
-			for j := start; j < end && j < len(booksCopy); j++ {
-				book := booksCopy[j]
-				if strings.Contains(strings.ToLower(book.Title), query) ||
-					strings.Contains(strings.ToLower(book.Description), query) {
-					results = append(results, book)
-				}
+			if strings.Contains(strings.ToLower(b.Title), query) || strings.Contains(strings.ToLower(b.Description), query) {
+				resultChannel <- b
 			}
-
-			resultsChan <- results
-		}(i*chunkSize, (i+1)*chunkSize)
+		}(book)
 	}
 
-	// Wait for all goroutines to finish and close the channel
-	go func() {
-		wg.Wait()
-		close(resultsChan)
-	}()
+	wg.Wait()
+	close(resultChannel)
 
-	// Collect results
-	var searchResults []Book
-	for results := range resultsChan {
-		searchResults = append(searchResults, results...)
+	for b := range resultChannel {
+		results = append(results, b)
 	}
 
-	json.NewEncoder(w).Encode(searchResults)
+	c.JSON(http.StatusOK, results)
 }
 
 func main() {
-	// Load books from file
-	err := loadBooks()
-	if err != nil {
-		log.Fatal("Failed to load books from file:", err)
-	}
+	loadBooks()
+	r := gin.Default()
 
-	// Create router
-	router := mux.NewRouter()
+	r.GET("/books", getBooks)
+	r.POST("/books", createBook)
+	r.GET("/books/:id", getBookByID)
+	r.PUT("/books/:id", updateBook)
+	r.DELETE("/books/:id", deleteBook)
+	r.GET("/books/search", searchBooks)
 
-	// Register routes
-	router.HandleFunc("/books", getBooks).Methods("GET")
-	router.HandleFunc("/books", createBook).Methods("POST")
-	router.HandleFunc("/books/{id}", getBook).Methods("GET")
-	router.HandleFunc("/books/{id}", updateBook).Methods("PUT")
-	router.HandleFunc("/books/{id}", deleteBook).Methods("DELETE")
-	router.HandleFunc("/books/search", searchBooks).Methods("GET")
-
-	// Start server
-	fmt.Println("Server is running on port 3000")
-	log.Fatal(http.ListenAndServe(":3000", router))
+	log.Fatal(r.Run(":3000"))
 }
